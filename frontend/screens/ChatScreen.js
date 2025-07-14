@@ -3,7 +3,7 @@ import { View, FlatList, TextInput, Button, Text, StyleSheet, KeyboardAvoidingVi
 import axios from 'axios';
 import { AuthContext } from '../App';
 
-const BACKEND_URL = 'http://localhost:3000'; // поменяй на свой адрес
+const BACKEND_URL = 'http://localhost:8080'; // поменяй на свой адрес
 
 export default function ChatScreen({ route }) {
   const { contactId, contactName } = route.params;
