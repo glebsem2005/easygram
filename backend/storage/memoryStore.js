@@ -1,86 +1,164 @@
-const messages = [];   // { from, to, encryptedPayload, timestamp }
-const posts = [];      // { id, from, content, media, timestamp, likes: [] }
-const userContacts = new Map(); // userId -> [contactUserId, ...]
-const userProfiles = new Map(); // userId -> { name, avatarUrl, bio, ... }
+const userProfiles = new Map(); // userId -> profile
+const contacts = new Map(); // userId -> Set(userId)
+const messages = new Map(); // userId -> []
+const posts = new Map(); // userId -> []
 
-// Сообщения
-function saveMessage({ from, to, encryptedPayload }) {
-  messages.push({ from, to, encryptedPayload, timestamp: Date.now() });
+function createUserProfile(userId, profile) {
+  userProfiles.set(userId, { 
+    ...profile, 
+    createdAt: Date.now(), 
+    interests: [],        
+    friends: new Set(),   
+    phoneNumber: profile.phoneNumber || null,
+  });
+  contacts.set(userId, new Set());
+  messages.set(userId, []);
+  posts.set(userId, []);
 }
 
-// Посты
-function savePost(post) {
-  posts.push({ ...post, likes: [] });
-}
-
-function getPostById(postId) {
-  return posts.find((p) => p.id === postId);
-}
-
-function updatePost(postId, updates) {
-  const post = getPostById(postId);
-  if (!post) return null;
-  Object.assign(post, updates);
-  return post;
-}
-
-function likePost(postId, userId) {
-  const post = getPostById(postId);
-  if (post && !post.likes.includes(userId)) {
-    post.likes.push(userId);
-  }
-}
-
-function getPostsForUser(userId) {
-  const contacts = getUserContacts(userId);
-  return posts.filter((p) => contacts.includes(p.from));
-}
-
-// Контакты
-function getUserContacts(userId) {
-  return userContacts.get(userId) || [];
-}
-
-function addContact(userId, contactId) {
-  if (!userContacts.has(userId)) userContacts.set(userId, []);
-  const contacts = userContacts.get(userId);
-  if (!contacts.includes(contactId)) contacts.push(contactId);
-}
-
-// Профили
 function getUserProfile(userId) {
-  return userProfiles.get(userId) || null;
+  const profile = userProfiles.get(userId);
+  if (!profile) return null;
+  return {
+    ...profile,
+    friends: Array.from(profile.friends || []),
+  };
 }
 
 function updateUserProfile(userId, updates) {
-  if (!userProfiles.has(userId)) return null;
   const profile = userProfiles.get(userId);
-  Object.assign(profile, updates);
-  userProfiles.set(userId, profile);
-  return profile;
+  if (!profile) return null;
+
+  if (updates.friends) {
+    profile.friends = new Set(updates.friends);
+    delete updates.friends;
+  }
+
+  if (updates.interests) {
+    profile.interests = Array.isArray(updates.interests) ? updates.interests : profile.interests;
+    delete updates.interests;
+  }
+
+  if (updates.phoneNumber) {
+    profile.phoneNumber = updates.phoneNumber;
+    delete updates.phoneNumber;
+  }
+
+  const updated = { ...profile, ...updates, updatedAt: Date.now() };
+  userProfiles.set(userId, updated);
+  return updated;
 }
 
-function createUserProfile(userId, initialData = {}) {
-  if (!userProfiles.has(userId)) {
-    userProfiles.set(userId, {
-      name: '',
-      avatarUrl: '',
-      bio: '',
-      ...initialData,
-    });
+function getContacts(userId) {
+  const userContacts = contacts.get(userId);
+  if (!userContacts) return [];
+  return Array.from(userContacts).map(id => getUserProfile(id));
+}
+
+function getMessagesForUser(userId) {
+  return messages.get(userId) || [];
+}
+
+function addMessage(userId, message) {
+  if (!messages.has(userId)) messages.set(userId, []);
+  messages.get(userId).push(message);
+}
+
+function addFileMessage(userId, message) {
+  if (!messages.has(userId)) messages.set(userId, []);
+  messages.get(userId).push(message);
+}
+
+function getPostsForUser(userId) {
+  return posts.get(userId) || [];
+}
+
+function addPost(userId, post) {
+  if (!posts.has(userId)) posts.set(userId, []);
+  posts.get(userId).push(post);
+}
+
+function updatePost(userId, postId, updates) {
+  const userPosts = posts.get(userId);
+  if (!userPosts) return null;
+  const postIndex = userPosts.findIndex(p => p.id === postId);
+  if (postIndex === -1) return null;
+  userPosts[postIndex] = { ...userPosts[postIndex], ...updates, updatedAt: Date.now() };
+  return userPosts[postIndex];
+}
+
+function deletePost(userId, postId) {
+  const userPosts = posts.get(userId);
+  if (!userPosts) return false;
+  const index = userPosts.findIndex(p => p.id === postId);
+  if (index === -1) return false;
+  userPosts.splice(index, 1);
+  return true;
+}
+
+// Функции для матчинга
+function countCommonFriends(userA, userB) {
+  const friendsA = userProfiles.get(userA)?.friends || new Set();
+  const friendsB = userProfiles.get(userB)?.friends || new Set();
+  let count = 0;
+  for (const f of friendsA) {
+    if (friendsB.has(f)) count++;
   }
+  return count;
+}
+
+function interestSimilarity(userA, userB) {
+  const interestsA = new Set(userProfiles.get(userA)?.interests || []);
+  const interestsB = new Set(userProfiles.get(userB)?.interests || []);
+  const intersection = new Set([...interestsA].filter(x => interestsB.has(x)));
+  const union = new Set([...interestsA, ...interestsB]);
+  if (union.size === 0) return 0;
+  return intersection.size / union.size;
+}
+
+function getMatchingUsers(userId) {
+  const allUserIds = [...userProfiles.keys()].filter(id => id !== userId);
+  const matches = allUserIds.map(id => ({
+    userId: id,
+    profile: getUserProfile(id),
+    commonFriends: countCommonFriends(userId, id),
+    interestMatch: interestSimilarity(userId, id),
+  }));
+
+  matches.sort((a, b) => {
+    if (b.interestMatch !== a.interestMatch) return b.interestMatch - a.interestMatch;
+    return b.commonFriends - a.commonFriends;
+  });
+
+  return matches;
+}
+
+// Поиск по номерам телефонов
+function findUsersByPhoneNumbers(phoneNumbers) {
+  const normalized = phoneNumbers.map(num => num.replace(/\D/g, ''));
+  const found = [];
+  for (const [userId, profile] of userProfiles.entries()) {
+    if (!profile.phoneNumber) continue;
+    const userPhone = profile.phoneNumber.replace(/\D/g, '');
+    if (normalized.includes(userPhone)) {
+      found.push({ userId, profile: getUserProfile(userId) });
+    }
+  }
+  return found;
 }
 
 module.exports = {
-  saveMessage,
-  savePost,
-  getPostById,
-  updatePost,
-  likePost,
-  getPostsForUser,
-  getUserContacts,
-  addContact,
+  createUserProfile,
   getUserProfile,
   updateUserProfile,
-  createUserProfile,
+  getContacts,
+  getMessagesForUser,
+  addMessage,
+  addFileMessage,
+  getPostsForUser,
+  addPost,
+  updatePost,
+  deletePost,
+  getMatchingUsers,
+  findUsersByPhoneNumbers,
 };
