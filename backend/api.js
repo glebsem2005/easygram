@@ -16,6 +16,8 @@ const {
   updatePost,
 } = require('./storage/memoryStore');
 
+const { register, login } = require('./auth');
+
 const app = express();
 app.use(express.json());
 
@@ -92,6 +94,26 @@ app.put('/post/:postId', (req, res) => {
   const updated = updatePost(req.params.postId, req.body);
   if (!updated) return res.status(404).json({ error: 'Пост не найден' });
   res.json({ success: true, post: updated });
+});
+
+app.post('/auth/register', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'username и password обязательны' });
+  try {
+    const user = register(username, password);
+    res.json({ success: true, user });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Логин
+app.post('/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'username и password обязательны' });
+  const user = login(username, password);
+  if (!user) return res.status(401).json({ error: 'Неверный логин или пароль' });
+  res.json({ success: true, user });
 });
 
 app.listen(HTTP_PORT, () => {
