@@ -3,7 +3,7 @@ import { View, FlatList, Text, TouchableOpacity, StyleSheet, Alert } from 'react
 import axios from 'axios';
 import { AuthContext } from '../App';
 
-const BACKEND_URL = 'http://localhost:3000'; // поменяй на свой адрес
+const BACKEND_URL = 'http://localhost:8080'; // поменяй на свой адрес
 
 export default function ContactsScreen({ navigation }) {
   const { authData } = useContext(AuthContext);
