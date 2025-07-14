@@ -1,10 +1,11 @@
+// backend/api.js
+
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const multer = require('multer');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const crypto = require('crypto');
 
 const { register, login, verifyToken } = require('./auth');
 const memoryStore = require('./storage/memoryStore');
@@ -15,9 +16,9 @@ const wss = new WebSocket.Server({ server });
 
 app.use(cors());
 app.use(bodyParser.json());
-
 const upload = multer({ storage: multer.memoryStorage() });
 
+// JWT middleware
 function authMiddleware(req, res, next) {
   if (req.path.startsWith('/auth')) return next();
 
@@ -31,22 +32,25 @@ function authMiddleware(req, res, next) {
   req.userId = payload.userId;
   next();
 }
-
 app.use(authMiddleware);
 
-// --- Аутентификация ---
-
+// Регистрация
 app.post('/auth/register', (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, phoneNumber } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'username и password обязательны' });
   try {
     const user = register(username, password);
+    // Добавляем телефон в профиль если есть
+    if (phoneNumber) {
+      memoryStore.updateUserProfile(user.userId, { phoneNumber });
+    }
     res.json({ success: true, user });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
+// Логин
 app.post('/auth/login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'username и password обязательны' });
@@ -55,8 +59,7 @@ app.post('/auth/login', (req, res) => {
   res.json({ success: true, user });
 });
 
-// --- Профиль ---
-
+// Профиль
 app.get('/profile', (req, res) => {
   const profile = memoryStore.getUserProfile(req.userId);
   if (!profile) return res.status(404).json({ error: 'Профиль не найден' });
@@ -65,75 +68,40 @@ app.get('/profile', (req, res) => {
 
 app.put('/profile', (req, res) => {
   const updates = req.body;
-  // Разрешаем обновлять: name, interests (array), phoneNumber, friends (array of userIds)
-  const allowedFields = ['name', 'interests', 'phoneNumber', 'friends'];
-  const filteredUpdates = {};
-  allowedFields.forEach(f => {
-    if (updates[f] !== undefined) filteredUpdates[f] = updates[f];
-  });
-  const updatedProfile = memoryStore.updateUserProfile(req.userId, filteredUpdates);
+  const updatedProfile = memoryStore.updateUserProfile(req.userId, updates);
+  if (!updatedProfile) return res.status(404).json({ error: 'Профиль не найден' });
   res.json(updatedProfile);
 });
 
-// --- Контакты и мэтчинг ---
-
-// Получить список контактов (все пользователи кроме себя)
+// Контакты
 app.get('/contacts', (req, res) => {
   const contacts = memoryStore.getContacts(req.userId);
   res.json(contacts);
 });
 
-// Мэтчинг - лента с "профилями" для свайпа с оценкой совместимости и общими друзьями
-app.get('/matching', (req, res) => {
-  const currentUserProfile = memoryStore.getUserProfile(req.userId);
-  if (!currentUserProfile) return res.status(404).json({ error: 'Профиль не найден' });
+// Добавить контакт (например, друга)
+app.post('/contacts', (req, res) => {
+  const { friendUserId } = req.body;
+  if (!friendUserId) return res.status(400).json({ error: 'friendUserId обязателен' });
 
-  const allProfiles = memoryStore.getAllUserProfiles().filter(p => p.userId !== req.userId);
+  const userProfile = memoryStore.getUserProfile(req.userId);
+  const friendProfile = memoryStore.getUserProfile(friendUserId);
+  if (!friendProfile) return res.status(404).json({ error: 'Пользователь для добавления не найден' });
 
-  function calcCommonFriends(p1, p2) {
-    if (!p1.friends || !p2.friends) return 0;
-    const set1 = new Set(p1.friends);
-    const set2 = new Set(p2.friends);
-    let count = 0;
-    set1.forEach(f => { if (set2.has(f)) count++; });
-    return count;
+  // Добавляем друг другу в друзья
+  if (!userProfile.friends.includes(friendUserId)) {
+    userProfile.friends.push(friendUserId);
   }
-
-  function calcInterestSimilarity(p1, p2) {
-    if (!p1.interests || !p2.interests) return 0;
-    const set1 = new Set(p1.interests);
-    const set2 = new Set(p2.interests);
-    let common = 0;
-    set1.forEach(i => { if (set2.has(i)) common++; });
-    const total = new Set([...p1.interests, ...p2.interests]).size || 1;
-    return common / total; // коэффициент от 0 до 1
+  if (!friendProfile.friends.includes(req.userId)) {
+    friendProfile.friends.push(req.userId);
   }
+  memoryStore.updateUserProfile(req.userId, { friends: userProfile.friends });
+  memoryStore.updateUserProfile(friendUserId, { friends: friendProfile.friends });
 
-  const matches = allProfiles.map(profile => {
-    const commonFriends = calcCommonFriends(currentUserProfile, profile);
-    const interestSimilarity = calcInterestSimilarity(currentUserProfile, profile);
-    return {
-      userId: profile.userId,
-      name: profile.name,
-      interests: profile.interests || [],
-      commonFriends,
-      interestSimilarity: +interestSimilarity.toFixed(2),
-      avatar: profile.avatar || null,
-    };
-  });
-
-  // Можно отсортировать по комбинированной метрике (например, общий балл)
-  matches.sort((a, b) => {
-    const scoreA = a.commonFriends * 0.5 + a.interestSimilarity * 5;
-    const scoreB = b.commonFriends * 0.5 + b.interestSimilarity * 5;
-    return scoreB - scoreA;
-  });
-
-  res.json(matches);
+  res.json({ success: true });
 });
 
-// --- Сообщения ---
-
+// Сообщения
 app.get('/messages', (req, res) => {
   const messages = memoryStore.getMessagesForUser(req.userId);
   res.json(messages);
@@ -143,22 +111,20 @@ app.post('/messages', (req, res) => {
   const { toUserId, text } = req.body;
   if (!toUserId || !text) return res.status(400).json({ error: 'toUserId и text обязательны' });
 
-  const message = memoryStore.addMessage(req.userId, toUserId, text);
+  const message = memoryStore.addMessage(req.userId, { from: req.userId, to: toUserId, text, timestamp: Date.now(), id: crypto.randomUUID() });
   res.json(message);
 });
 
 app.post('/messages/upload', upload.single('file'), (req, res) => {
-  const { toUserId, type } = req.body; // type: image/audio/video
-  if (!toUserId || !type || !req.file) {
-    return res.status(400).json({ error: 'toUserId, type и файл обязательны' });
-  }
+  const { toUserId, type } = req.body;
+  if (!toUserId || !type || !req.file) return res.status(400).json({ error: 'toUserId, type и файл обязательны' });
+
   const fileData = req.file.buffer.toString('base64');
-  const message = memoryStore.addFileMessage(req.userId, toUserId, type, fileData, req.file.mimetype);
+  const message = memoryStore.addFileMessage(req.userId, { from: req.userId, to: toUserId, type, fileData, mime: req.file.mimetype, timestamp: Date.now(), id: crypto.randomUUID() });
   res.json(message);
 });
 
-// --- Посты ---
-
+// Посты
 app.get('/posts', (req, res) => {
   const posts = memoryStore.getPostsForUser(req.userId);
   res.json(posts);
@@ -174,7 +140,7 @@ app.post('/posts', upload.single('image'), (req, res) => {
   }
   if (!text && !imageBase64) return res.status(400).json({ error: 'Текст или изображение обязательны' });
 
-  const post = memoryStore.addPost(req.userId, text, imageBase64, imageMime);
+  const post = memoryStore.addPost(req.userId, { id: crypto.randomUUID(), text, imageBase64, imageMime, timestamp: Date.now() });
   res.json(post);
 });
 
@@ -193,7 +159,23 @@ app.delete('/posts/:postId', (req, res) => {
   res.json({ success: true });
 });
 
-// --- WebSocket ---
+// Матчи — новая фича
+app.get('/matches', (req, res) => {
+  const matches = memoryStore.getMatchingUsers(req.userId);
+  res.json(matches);
+});
+
+// Поиск пользователей по номерам телефонов
+app.post('/users/search-by-phone', (req, res) => {
+  const { phoneNumbers } = req.body;
+  if (!phoneNumbers || !Array.isArray(phoneNumbers)) {
+    return res.status(400).json({ error: 'phoneNumbers должен быть массивом' });
+  }
+  const users = memoryStore.findUsersByPhoneNumbers(phoneNumbers);
+  res.json(users);
+});
+
+// WebSocket
 
 const clients = new Map();
 
@@ -236,7 +218,7 @@ wss.on('connection', function connection(ws, req) {
           return;
         }
 
-        const msg = memoryStore.addMessage(ws.userId, toUserId, text);
+        const msg = memoryStore.addMessage(ws.userId, { from: ws.userId, to: toUserId, text, timestamp: Date.now(), id: crypto.randomUUID() });
 
         const receivers = clients.get(toUserId);
         if (receivers) {
@@ -257,13 +239,12 @@ wss.on('connection', function connection(ws, req) {
       const userSockets = clients.get(ws.userId);
       if (userSockets) {
         userSockets.delete(ws);
-        if (userSockets.size === 0) clients.delete(ws.userId);
+        if (userSockets.size === 0) {
+          clients.delete(ws.userId);
+        }
       }
     }
   });
 });
 
-const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => {
-  console.log(`Backend server listening on port ${PORT}`);
-});
+module.exports = { app, server };
