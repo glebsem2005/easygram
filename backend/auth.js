@@ -1,11 +1,27 @@
 const crypto = require('crypto');
-const { createUserProfile, getUserProfile } = require('./storage/memoryStore');
+const jwt = require('jsonwebtoken');
+const { createUserProfile } = require('./storage/memoryStore');
 
 const users = new Map(); // userId -> { username, passwordHash, salt }
+
+const JWT_SECRET = 'your-very-secure-secret-key'; // Поменяй на env-переменную в проде
+const JWT_EXPIRES_IN = '7d';
 
 // Хэширование пароля (PBKDF2)
 function hashPassword(password, salt) {
   return crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+}
+
+function generateToken(userId) {
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+}
+
+function verifyToken(token) {
+  try {
+    return jwt.verify(token, JWT_SECRET);
+  } catch {
+    return null;
+  }
 }
 
 // Регистрация нового пользователя
@@ -20,7 +36,8 @@ function register(username, password) {
   users.set(userId, { username, passwordHash, salt });
   createUserProfile(userId, { name: username });
 
-  return { userId, username };
+  // Возвращаем токен сразу после регистрации
+  return { userId, username, token: generateToken(userId) };
 }
 
 // Аутентификация пользователя
@@ -30,7 +47,7 @@ function login(username, password) {
   const [userId, userData] = userEntry;
   const attemptedHash = hashPassword(password, userData.salt);
   if (attemptedHash === userData.passwordHash) {
-    return { userId, username };
+    return { userId, username, token: generateToken(userId) };
   }
   return null;
 }
@@ -38,4 +55,6 @@ function login(username, password) {
 module.exports = {
   register,
   login,
+  generateToken,
+  verifyToken,
 };
